@@ -1,0 +1,73 @@
+# =============================================================================
+# SARNA v4.0 — Ingestion Loop
+# =============================================================================
+# Runs every 3 hours. Pipeline: ScraperAPI → Regex → Groq Triage → Email
+# Fallback chain: ScraperAPI → Old Reddit → Standard RSS
+#
+# Monthly usage: ~240 runs × ~2 min avg = ~480 of 2,000 free minutes
+# =============================================================================
+
+name: SARNA Ingestion Loop
+
+on:
+  schedule:
+    # Runs every 3 hours at 35 minutes past the UTC hour
+    - cron: '35 */3 * * *'
+
+  # Manual trigger from GitHub Actions UI (for testing)
+  workflow_dispatch:
+
+  # Webhook / External Cron trigger via GitHub REST API
+  repository_dispatch:
+    types: [trigger-ingestion]
+
+permissions:
+  contents: write  # CRITICAL: Required for git push of processed_posts.json
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # 1. Check out the repository (with token for push)
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Set up Python
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # 3. Install dependencies
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt
+
+      # 4. Run the ingestion pipeline
+      - name: 🚀 Run SARNA Ingestion
+        env:
+          PYTHONIOENCODING: "utf-8"
+          REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_COMMENT: ${{ secrets.GROQ_API_KEY_COMMENT }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+        run: python main.py --mode ingestion
+
+      # 5. CRITICAL: Commit processed_posts.json back to repo
+      #    Without this, deduplication breaks across runs
+      - name: 💾 Commit state ledger
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "SARNA Agent"
+          git add processed_posts.json
+          if ! git diff --cached --quiet; then
+            git commit -m "🤖 Update processed posts ledger [skip ci]"
+            git pull --rebase origin main
+            git push
+          fi
